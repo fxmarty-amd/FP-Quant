@@ -1,6 +1,8 @@
 import math
 from abc import abstractmethod
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 from fast_hadamard_transform import hadamard_transform
@@ -29,15 +31,35 @@ class IdentityTransform(BaseTransform):
 
 class HadamardTransform(BaseTransform):
 
-    def __init__(self, group_size: int = 128):
+    def __init__(self, group_size: Optional[int]):
         super().__init__()
-        self.group_size = group_size
-        self.scale = 1 / math.sqrt(self.group_size)
+
+        if group_size is not None:
+            self.group_size = group_size
+            self.scale = 1 / math.sqrt(self.group_size)
+        else:
+            self.group_size = None
 
     def forward(self, x: torch.Tensor, inv_t: bool = False, dim: int = -1):
-        # Hadamard transform is it own inverse
         x_shape = x.shape
-        return hadamard_transform(x.view(-1, self.group_size), scale=self.scale).view(x_shape)
+        if dim != -1:
+            assert dim == 0
+            assert x.ndim == 2
+
+            x = x.reshape(1, 0)
+
+        if self.group_size is not None:
+            # Hadamard transform is it own inverse
+            x = hadamard_transform(x.view(-1, self.group_size), scale=self.scale).view(x_shape)
+        else:
+            group_size = x_shape[dim]
+            scale = 1 / math.sqrt(group_size)
+            x = hadamard_transform(x.view(-1, group_size), scale=scale).view(x_shape)
+
+        if dim != -1:
+            x = x.reshape(1, 0)
+
+        return x
 
 
 TRANSFORMS = {

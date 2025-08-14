@@ -25,7 +25,9 @@ def rtn_quantization(
     # Get transformer blocks
     blocks = model.model.layers
     # Define common transform kwargs
-    transform_kwargs = dict(group_size=args.w_group_size)
+    transform_kwargs = dict(group_size=args.hadamard_group_size)
+    print("transform_kwargs", transform_kwargs)
+
     # Init quantizers
     weight_quantizer = None
     if args.w_bits < 16:
@@ -55,6 +57,7 @@ def rtn_quantization(
     # Iterate over transformer blocks
     for block_idx, block in enumerate(blocks):
         print(f"Processing block {block_idx}...")
+        print(f"args.transform_class: {args.transform_class}")
         # 1. Init transforms
         qkv_in_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
         o_in_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
@@ -68,14 +71,16 @@ def rtn_quantization(
             weight_quantizer=weight_quantizer,
             act_quantizer=act_quantizer,
             qkv_in_transform=qkv_in_transform,
-            o_in_transform=o_in_transform
+            o_in_transform=o_in_transform,
+            gate_up_in_transform=gate_up_in_transform
         )
         quantized_mlp = get_mlp_layer(model.config)(
             model.config,
             weight_quantizer=weight_quantizer,
             act_quantizer=act_quantizer,
             gate_up_in_transform=gate_up_in_transform,
-            down_in_transform=down_in_transform
+            down_in_transform=down_in_transform,
+            qkv_in_transform=qkv_in_transform
         )
 
         quantized_attn.load_state_dict(block.self_attn.state_dict(), strict=False)

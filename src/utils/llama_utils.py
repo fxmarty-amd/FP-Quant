@@ -23,7 +23,8 @@ class QuantizedLlamaMLP(nn.Module):
         weight_quantizer: Quantizer = None,
         act_quantizer: Quantizer = None,
         gate_up_in_transform: BaseTransform = IdentityTransform(),
-        down_in_transform: BaseTransform = IdentityTransform()
+        down_in_transform: BaseTransform = IdentityTransform(),
+        qkv_in_transform: BaseTransform = IdentityTransform(),
     ):
         super().__init__()
         # Init layers   
@@ -52,19 +53,24 @@ class QuantizedLlamaMLP(nn.Module):
 
         self.gate_up_in_transform = gate_up_in_transform
         self.down_in_transform = down_in_transform
+        self.qkv_in_transform = qkv_in_transform
 
         self._train_mode = True
 
     def forward(self, x: torch.Tensor):
         # Rotate input
-        x = self.gate_up_in_transform(x)
+        # fused in o_proj!
+        # x = self.gate_up_in_transform(x)
+
         # Get up and gate projection outputs
-        up = self.up_proj(x, self.gate_up_in_transform)
+        up = self.up_proj(x, self.gate_up_in_transform, self.qkv_in_transform)
         gate = self.gate_proj(x, self.gate_up_in_transform)
         # Apply activation function
         x = self.act_fn(gate) * up
         # Get down projection output
+        # R4: this is the only online transform that is not fused.
         x = self.down_in_transform(x)
+
         down = self.down_proj(x, self.down_in_transform)
         return down
 
@@ -86,7 +92,8 @@ class QuantizedLlamaAttention(nn.Module):
         weight_quantizer: Quantizer = None,
         act_quantizer: Quantizer = None,
         qkv_in_transform: BaseTransform = IdentityTransform(),
-        o_in_transform: BaseTransform = IdentityTransform()
+        o_in_transform: BaseTransform = IdentityTransform(),
+        gate_up_in_transform: BaseTransform = IdentityTransform(),
     ):
         super().__init__()
         self.config = config
@@ -121,6 +128,7 @@ class QuantizedLlamaAttention(nn.Module):
         # Init transformations
         self.qkv_in_transform = qkv_in_transform
         self.o_in_transform = o_in_transform
+        self.gate_up_in_transform = gate_up_in_transform
 
         self._train_mode = True
 
@@ -137,11 +145,19 @@ class QuantizedLlamaAttention(nn.Module):
         hidden_shape = (*input_shape, -1, self.head_dim)
 
         # Rotate input
-        hidden_states = self.qkv_in_transform(hidden_states)
+        # fused in down_proj!
+        # hidden_states = self.qkv_in_transform(hidden_states)
 
         query_states = self.q_proj(hidden_states, self.qkv_in_transform).view(hidden_shape).transpose(1, 2)
         key_states = self.k_proj(hidden_states, self.qkv_in_transform).view(hidden_shape).transpose(1, 2)
-        value_states = self.v_proj(hidden_states, self.qkv_in_transform).view(hidden_shape).transpose(1, 2)
+    
+        value_states = self.v_proj(
+            hidden_states,
+            self.qkv_in_transform,
+            self.o_in_transform
+        )
+        
+        value_states = value_states.view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
@@ -175,8 +191,14 @@ class QuantizedLlamaAttention(nn.Module):
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         # Rotate attn output
-        attn_output = self.o_in_transform(attn_output)
-        attn_output = self.o_proj(attn_output, self.o_in_transform)
+        # fused in v_proj!
+        # attn_output = self.o_in_transform(attn_output)
+
+        attn_output = self.o_proj(
+            attn_output,
+            self.o_in_transform,
+            self.gate_up_in_transform
+        )
         return attn_output, attn_weights
 
     def fix_parametrization(self):

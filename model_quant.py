@@ -102,7 +102,10 @@ def save_quantized_model(model, quantized_state_dict, args):
         json.dump({"metadata": {}, "weight_map": safetensors_index}, f)
 
     # Add quantization metadata
-    config.quantization_config = prepare_quantization_config(args.w_group_size, args.format)
+    config.quantization_config = prepare_quantization_config(
+        args.hadamard_group_size,
+        args.format
+    )
     # Save configs
     config.save_pretrained(args.save_path)
     model.generation_config.save_pretrained(args.save_path)
@@ -163,6 +166,11 @@ def parse_args():
         type=int,
         required=True,
         help="Weight quantization bitwidth.",
+    )
+    parser.add_argument(
+        "--hadamard_group_size",
+        type=int,
+        default=None
     )
     parser.add_argument(
         "--w_group_size",
@@ -306,6 +314,10 @@ def parse_args():
     )
     # Parse arguments
     args = parser.parse_args()
+
+    if args.hadamard_group_size == 0:
+        args.hadamard_group_size = None
+
     # Check and fix group_size (if needed)
     if args.format == "nvfp":
         if args.w_group_size != NVFP_GROUPSIZE:
