@@ -20,11 +20,12 @@ class QuantizedLlamaMLP(nn.Module):
     def __init__(
         self, 
         config: LlamaConfig,
-        weight_quantizer: Quantizer = None,
-        act_quantizer: Quantizer = None,
-        gate_up_in_transform: BaseTransform = IdentityTransform(),
-        down_in_transform: BaseTransform = IdentityTransform(),
-        qkv_in_transform: BaseTransform = IdentityTransform(),
+        weight_quantizer: Optional[Quantizer],
+        act_quantizer: Optional[Quantizer],
+        gate_up_in_transform: BaseTransform,
+        down_in_transform: BaseTransform,
+        qkv_in_transform: BaseTransform,
+        fuse_rotations: bool,
     ):
         super().__init__()
         # Init layers   
@@ -55,12 +56,14 @@ class QuantizedLlamaMLP(nn.Module):
         self.down_in_transform = down_in_transform
         self.qkv_in_transform = qkv_in_transform
 
+        self.fuse_rotations = fuse_rotations
+
         self._train_mode = True
 
     def forward(self, x: torch.Tensor):
         # Rotate input
-        # disabled as fused in o_proj!
-        # x = self.gate_up_in_transform(x)
+        if not self.fuse_rotations:
+            x = self.gate_up_in_transform(x)
 
         # Get up and gate projection outputs
         up = self.up_proj(x, self.gate_up_in_transform)
@@ -79,7 +82,12 @@ class QuantizedLlamaMLP(nn.Module):
         # Fix layer parametrizations
         self.up_proj.fix_parametrization(self.gate_up_in_transform)
         self.gate_proj.fix_parametrization(self.gate_up_in_transform)
-        self.down_proj.fix_parametrization(self.down_in_transform, self.qkv_in_transform)
+
+        if self.fuse_rotations:
+            print("Fusing qkv_in_transform in down_proj")
+            self.down_proj.fix_parametrization(self.down_in_transform, self.qkv_in_transform)
+        else:
+            self.down_proj.fix_parametrization(self.down_in_transform)
 
         self._train_mode = False
 
@@ -90,11 +98,12 @@ class QuantizedLlamaAttention(nn.Module):
         self, 
         config: LlamaConfig, 
         layer_idx: int,
-        weight_quantizer: Quantizer = None,
-        act_quantizer: Quantizer = None,
-        qkv_in_transform: BaseTransform = IdentityTransform(),
-        o_in_transform: BaseTransform = IdentityTransform(),
-        gate_up_in_transform: BaseTransform = IdentityTransform(),
+        weight_quantizer: Optional[Quantizer],
+        act_quantizer: Optional[Quantizer],
+        qkv_in_transform: BaseTransform,
+        o_in_transform: BaseTransform,
+        gate_up_in_transform: BaseTransform,
+        fuse_rotations: bool
     ):
         super().__init__()
         self.config = config
@@ -104,6 +113,8 @@ class QuantizedLlamaAttention(nn.Module):
         self.scaling = self.head_dim ** -0.5
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
+
+        self.fuse_rotations = fuse_rotations
         
         self.q_proj = QLinear(
             config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias,
@@ -146,8 +157,8 @@ class QuantizedLlamaAttention(nn.Module):
         hidden_shape = (*input_shape, -1, self.head_dim)
 
         # Rotate input
-        # disabled as fused in down_proj!
-        # hidden_states = self.qkv_in_transform(hidden_states)
+        if not self.fuse_rotations:
+            hidden_states = self.qkv_in_transform(hidden_states)
 
         query_states = self.q_proj(hidden_states, self.qkv_in_transform).view(hidden_shape).transpose(1, 2)
         key_states = self.k_proj(hidden_states, self.qkv_in_transform).view(hidden_shape).transpose(1, 2)
@@ -215,6 +226,10 @@ class QuantizedLlamaAttention(nn.Module):
         # self.v_proj.fix_parametrization(self.qkv_in_transform, self.o_in_transform)
         self.v_proj.fix_parametrization(self.qkv_in_transform)
 
-        self.o_proj.fix_parametrization(self.o_in_transform, self.gate_up_in_transform)
+        if self.fuse_rotations:
+            print("Fusing gate_up_in_transform in o_proj")
+            self.o_proj.fix_parametrization(self.o_in_transform, self.gate_up_in_transform)
+        else:
+            self.o_proj.fix_parametrization(self.o_in_transform)
 
         self._train_mode = False

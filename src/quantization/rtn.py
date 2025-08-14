@@ -173,7 +173,7 @@ def rtn_quantization(
     # R1: shared accross all layers.
     r1_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
     
-    if args.transform_class == "hadamard":
+    if args.transform_class == "hadamard" and args.fuse_rotations:
         scaling_layers = get_scaling_layers(SCALING_LAYERS_ABSTRACT, model)
 
         # Before applying R1: edit LayerNorm layers.
@@ -214,7 +214,8 @@ def rtn_quantization(
             act_quantizer=act_quantizer,
             qkv_in_transform=r1_transform,
             o_in_transform=o_in_transform,
-            gate_up_in_transform=r1_transform
+            gate_up_in_transform=r1_transform,
+            fuse_rotations=args.fuse_rotations,
         )
         quantized_mlp = get_mlp_layer(model.config)(
             model.config,
@@ -222,7 +223,8 @@ def rtn_quantization(
             act_quantizer=act_quantizer,
             gate_up_in_transform=r1_transform,
             down_in_transform=down_in_transform,
-            qkv_in_transform=r1_transform
+            qkv_in_transform=r1_transform,
+            fuse_rotations=args.fuse_rotations,
         )
 
         quantized_attn.load_state_dict(block.self_attn.state_dict(), strict=False)

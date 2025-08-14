@@ -222,6 +222,11 @@ def parse_args():
         help="Whether to disable quantization."
     )
     parser.add_argument(
+        "--fuse-rotations",
+        action="store_true",
+        help="Whether to fuse R1 rotations."
+    )
+    parser.add_argument(
         "--mxfp_scale_factor",
         type=float,
         default=0.75, # Tseng scaling factor
