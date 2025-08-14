@@ -18,7 +18,40 @@ from ..transforms.transforms import build_transform, get_transform_matrix
 from tqdm import tqdm
 from quark.torch.algorithm.utils.module import get_nested_attr_from_module
 from quark.torch.algorithm.rotation.rotation_utils import  transform_rms_norm_and_linear
-from quark.torch.utils.accelerate_helper import untie_parameters
+
+SCALING_LAYERS_ABSTRACT = {
+    "first_layer": [
+        {
+            "prev_modules": ["model.embed_tokens"],
+            "norm_module": "model.layers.layer_id.input_layernorm",
+            "next_modules": ["model.layers.layer_id.self_attn.q_proj", "model.layers.layer_id.self_attn.k_proj", "model.layers.layer_id.self_attn.v_proj"]
+        },
+        {
+            "prev_modules": ["model.layers.layer_id.self_attn.o_proj"],
+            "norm_module": "model.layers.layer_id.post_attention_layernorm",
+            "next_modules": ["model.layers.layer_id.mlp.up_proj", "model.layers.layer_id.mlp.gate_proj"]
+        }
+    ],
+    "middle_layers": [
+        {
+            "prev_modules": ["model.layers.pre_layer_id.mlp.down_proj"],
+            "norm_module": "model.layers.layer_id.input_layernorm",
+            "next_modules": ["model.layers.layer_id.self_attn.q_proj", "model.layers.layer_id.self_attn.k_proj", "model.layers.layer_id.self_attn.v_proj"]
+        },
+        {
+            "prev_modules": ["model.layers.layer_id.self_attn.o_proj"],
+            "norm_module": "model.layers.layer_id.post_attention_layernorm",
+            "next_modules": ["model.layers.layer_id.mlp.up_proj", "model.layers.layer_id.mlp.gate_proj"]
+        }
+    ],
+    "last_layer": [
+        {
+            "prev_modules": ["model.layers.layer_id.mlp.down_proj"],
+            "norm_module": "model.norm",
+            "next_modules": ["lm_head"]
+        }
+    ]
+}
 
 class ModuleWrapped(nn.Module):
     def __init__(self, module: nn.Module, transform, position: str):
@@ -140,59 +173,28 @@ def rtn_quantization(
     # R1: shared accross all layers.
     r1_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
     
-    scaling_layers_abstract = {
-        "first_layer": [
-            {
-                "prev_modules": ["model.embed_tokens"],
-                "norm_module": "model.layers.layer_id.input_layernorm",
-                "next_modules": ["model.layers.layer_id.self_attn.q_proj", "model.layers.layer_id.self_attn.k_proj", "model.layers.layer_id.self_attn.v_proj"]
-            },
-            {
-                "prev_modules": ["model.layers.layer_id.self_attn.o_proj"],
-                "norm_module": "model.layers.layer_id.post_attention_layernorm",
-                "next_modules": ["model.layers.layer_id.mlp.up_proj", "model.layers.layer_id.mlp.gate_proj"]
-            }
-        ],
-        "middle_layers": [
-            {
-                "prev_modules": ["model.layers.pre_layer_id.mlp.down_proj"],
-                "norm_module": "model.layers.layer_id.input_layernorm",
-                "next_modules": ["model.layers.layer_id.self_attn.q_proj", "model.layers.layer_id.self_attn.k_proj", "model.layers.layer_id.self_attn.v_proj"]
-            },
-            {
-                "prev_modules": ["model.layers.layer_id.self_attn.o_proj"],
-                "norm_module": "model.layers.layer_id.post_attention_layernorm",
-                "next_modules": ["model.layers.layer_id.mlp.up_proj", "model.layers.layer_id.mlp.gate_proj"]
-            }
-        ],
-        "last_layer": [
-            {
-                "prev_modules": ["model.layers.layer_id.mlp.down_proj"],
-                "norm_module": "model.norm",
-                "next_modules": ["lm_head"]
-            }
-        ]
-    }
-    scaling_layers = get_scaling_layers(scaling_layers_abstract, model)
+    if args.transform_class == "hadamard":
+        scaling_layers = get_scaling_layers(SCALING_LAYERS_ABSTRACT, model)
 
-    # Before applying R1: edit LayerNorm layers.
-    for layers_pattern in tqdm(scaling_layers, desc="RMSNorm update"):
-        norm_module = get_nested_attr_from_module(model, layers_pattern["norm_module"])
-        next_modules = [
-            get_nested_attr_from_module(model, layer_name) for layer_name in layers_pattern["next_modules"]
-        ]
+        # Before applying R1: edit LayerNorm layers.
+        for layers_pattern in tqdm(scaling_layers, desc="RMSNorm update"):
+            norm_module = get_nested_attr_from_module(model, layers_pattern["norm_module"])
+            next_modules = [
+                get_nested_attr_from_module(model, layer_name) for layer_name in layers_pattern["next_modules"]
+            ]
 
-        transform_rms_norm_and_linear(norm_module, next_modules)
+            transform_rms_norm_and_linear(norm_module, next_modules)
 
-    # Add R1 to embed_tokens, R1^(-1) to lm_head
-    model.model.embed_tokens.weight.data = model.model.embed_tokens.weight.data.clone()
-    model.lm_head.weight.data = model.lm_head.weight.data.clone()
+        # Add R1 to embed_tokens, R1^(-1) to lm_head.
+        # R1 will be added in linear layers using the `qkv_in_transform` and `gate_up_in_transform` logic.
+        model.model.embed_tokens.weight.data = model.model.embed_tokens.weight.data.clone()
+        model.lm_head.weight.data = model.lm_head.weight.data.clone()
 
-    model.model.embed_tokens = ModuleWrapped(model.model.embed_tokens, r1_transform, position="after")
+        model.model.embed_tokens = ModuleWrapped(model.model.embed_tokens, r1_transform, position="after")
 
-    model.lm_head = ModuleWrapped(model.lm_head, r1_transform, position="before")
-    # lm_head can have bias.
-    assert not hasattr(model.model.embed_tokens, "bias")
+        model.lm_head = ModuleWrapped(model.lm_head, r1_transform, position="before")
+        # lm_head can have bias.
+        assert not hasattr(model.model.embed_tokens, "bias")
 
     # Iterate over transformer blocks
     for block_idx, block in enumerate(blocks):
