@@ -10,8 +10,87 @@ from .qlinear import QLinear
 from .quantizer import Quantizer
 from .quant_ops import pack_fp4_to_uint8, prepare_scales_for_saving
 
+from typing import List
+
 from ..utils.model_utils import get_attention_layer, get_mlp_layer
 from ..transforms.transforms import build_transform, get_transform_matrix
+
+from tqdm import tqdm
+from quark.torch.algorithm.utils.module import get_nested_attr_from_module
+from quark.torch.algorithm.rotation.rotation_utils import  transform_rms_norm_and_linear
+from quark.torch.utils.accelerate_helper import untie_parameters
+
+class ModuleWrapped(nn.Module):
+    def __init__(self, module: nn.Module, transform, position: str):
+        super().__init__()
+        self.module = module
+        self.transform = transform
+        self.position = position
+
+        assert self.position in ["before", "after"]
+    
+    def forward(self, x):
+        if self.position == "before":
+            x = self.transform(x)
+        
+        x = self.module(x)
+
+        if self.position == "after":
+            x = self.transform(x)
+        
+        return x
+
+def get_prev_out_channels_dims(prev_modules: List[nn.Module]) -> List[int]:
+    prev_out_channels_dims = []
+    for module in prev_modules:
+        if isinstance(module, nn.Embedding):
+            prev_out_channels_dims.append(1)
+        elif isinstance(module, nn.Linear):
+            prev_out_channels_dims.append(0)
+        else:
+            raise ValueError("prev_modules is wrong")
+    return prev_out_channels_dims
+
+
+def get_scaling_layers(scaling_layers_abstract, model):
+    scaling_layers = []
+    for i in range(len(model.model.layers)):
+        scaling_layers_cur = []
+
+        if i == 0:
+            for layers_pattern in scaling_layers_abstract["first_layer"]:
+                scaling_layers_cur.append({
+                    "prev_modules":
+                    [layer_name.replace("layer_id", str(i)) for layer_name in layers_pattern["prev_modules"]],
+                    "norm_module":
+                    layers_pattern["norm_module"].replace("layer_id", str(i)),
+                    "next_modules":
+                    [layer_name.replace("layer_id", str(i)) for layer_name in layers_pattern["next_modules"]]
+                })
+        else:
+            for layers_pattern in scaling_layers_abstract["middle_layers"]:
+                scaling_layers_cur.append({
+                    "prev_modules": [
+                        layer_name.replace("pre_layer_id", str(i - 1)).replace("layer_id", str(i))
+                        for layer_name in layers_pattern["prev_modules"]
+                    ],
+                    "norm_module":
+                    layers_pattern["norm_module"].replace("layer_id", str(i)),
+                    "next_modules":
+                    [layer_name.replace("layer_id", str(i)) for layer_name in layers_pattern["next_modules"]]
+                })
+            if i == len(model.model.layers) - 1:
+                for layers_pattern in scaling_layers_abstract["last_layer"]:
+                    scaling_layers_cur.append({
+                        "prev_modules":
+                        [layer_name.replace("layer_id", str(i)) for layer_name in layers_pattern["prev_modules"]],
+                        "norm_module":
+                        layers_pattern["norm_module"].replace("layer_id", str(i)),
+                        "next_modules":
+                        [layer_name.replace("layer_id", str(i)) for layer_name in layers_pattern["next_modules"]]
+                    })
+        scaling_layers.extend(scaling_layers_cur)
+    return scaling_layers
 
 
 def rtn_quantization(
@@ -29,7 +108,7 @@ def rtn_quantization(
     transform_kwargs = dict(group_size=args.hadamard_group_size)
     print("transform_kwargs", transform_kwargs)
 
-    no_quant = args.no_quant
+    assert model.config.model_type == "llama"
 
     # Init quantizers
     weight_quantizer = None
@@ -43,8 +122,8 @@ def rtn_quantization(
             group_size=args.w_group_size,
             scale_precision=args.scale_precision,
             scale_factor=args.mxfp_scale_factor,
-            no_quant=no_quant,
         )
+
     act_quantizer = None
     if args.a_bits < 16 and not args.no_quant:
         act_quantizer = Quantizer(
@@ -56,60 +135,73 @@ def rtn_quantization(
             group_size=args.a_group_size,
             scale_precision=args.scale_precision,
             scale_factor=args.mxfp_scale_factor,
-            no_quant=no_quant,
         )
 
-    # 1. Init transforms
-
-    # R1
-    # qkv_in_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
-    qkv_in_transform = None
-
-    # R1
-    # gate_up_in_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
-    gate_up_in_transform = None
-
-    class ModuleWrapped(nn.Module):
-        def __init__(self, module: nn.Module, transform, position: str):
-            super().__init__()
-            self.module = module
-            self.transform = transform
-            self.position = position
-        
-        def forward(self, x):
-            if self.position == "before":
-                x = self.transform(x)
-            
-            x = self.module(x)
-
-            if self.position == "after":
-                x = self.transform(x)
-            
-            return x
+    # R1: shared accross all layers.
+    r1_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
     
+    scaling_layers_abstract = {
+        "first_layer": [
+            {
+                "prev_modules": ["model.embed_tokens"],
+                "norm_module": "model.layers.layer_id.input_layernorm",
+                "next_modules": ["model.layers.layer_id.self_attn.q_proj", "model.layers.layer_id.self_attn.k_proj", "model.layers.layer_id.self_attn.v_proj"]
+            },
+            {
+                "prev_modules": ["model.layers.layer_id.self_attn.o_proj"],
+                "norm_module": "model.layers.layer_id.post_attention_layernorm",
+                "next_modules": ["model.layers.layer_id.mlp.up_proj", "model.layers.layer_id.mlp.gate_proj"]
+            }
+        ],
+        "middle_layers": [
+            {
+                "prev_modules": ["model.layers.pre_layer_id.mlp.down_proj"],
+                "norm_module": "model.layers.layer_id.input_layernorm",
+                "next_modules": ["model.layers.layer_id.self_attn.q_proj", "model.layers.layer_id.self_attn.k_proj", "model.layers.layer_id.self_attn.v_proj"]
+            },
+            {
+                "prev_modules": ["model.layers.layer_id.self_attn.o_proj"],
+                "norm_module": "model.layers.layer_id.post_attention_layernorm",
+                "next_modules": ["model.layers.layer_id.mlp.up_proj", "model.layers.layer_id.mlp.gate_proj"]
+            }
+        ],
+        "last_layer": [
+            {
+                "prev_modules": ["model.layers.layer_id.mlp.down_proj"],
+                "norm_module": "model.norm",
+                "next_modules": ["lm_head"]
+            }
+        ]
+    }
+    scaling_layers = get_scaling_layers(scaling_layers_abstract, model)
+
+    # Before applying R1: edit LayerNorm layers.
+    for layers_pattern in tqdm(scaling_layers, desc="RMSNorm update"):
+        norm_module = get_nested_attr_from_module(model, layers_pattern["norm_module"])
+        next_modules = [
+            get_nested_attr_from_module(model, layer_name) for layer_name in layers_pattern["next_modules"]
+        ]
+
+        transform_rms_norm_and_linear(norm_module, next_modules)
+
     # Add R1 to embed_tokens, R1^(-1) to lm_head
-    # model.model.embed_tokens.weight.data = model.model.embed_tokens.weight.data.clone()
-    # model.model.embed_tokens = ModuleWrapped(model.model.embed_tokens, qkv_in_transform, position="after")
+    model.model.embed_tokens.weight.data = model.model.embed_tokens.weight.data.clone()
+    model.lm_head.weight.data = model.lm_head.weight.data.clone()
 
-    # model.lm_head.weight.data = model.lm_head.weight.data.clone()
-    # model.lm_head = ModuleWrapped(model.lm_head, qkv_in_transform, position="before")
+    model.model.embed_tokens = ModuleWrapped(model.model.embed_tokens, r1_transform, position="after")
 
-    # print("model.model.layers[0].self_attn.v_proj.weight", model.model.layers[0].self_attn.v_proj.weight.shape)
-    # print("model.model.layers[0].self_attn.o_proj.weight", model.model.layers[0].self_attn.o_proj.weight.shape)
-    # ref_res = model.model.layers[0].self_attn.v_proj.weight.T @ model.model.layers[0].self_attn.o_proj.weight.T
+    model.lm_head = ModuleWrapped(model.lm_head, r1_transform, position="before")
+    # lm_head can have bias.
+    assert not hasattr(model.model.embed_tokens, "bias")
 
     # Iterate over transformer blocks
     for block_idx, block in enumerate(blocks):
         print(f"Processing block {block_idx}...")
-        print(f"args.transform_class: {args.transform_class}")
 
         # R2
-        # o_in_transform = None
         o_in_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
-        # o_in_transform = build_transform("identity")
 
         # R4
-        # down_in_transform = build_transform("identity")
         down_in_transform = build_transform(args.transform_class, size=model.config.intermediate_size, **transform_kwargs)     
 
         # 2. Replace blocks with quantized versions
@@ -118,17 +210,17 @@ def rtn_quantization(
             layer_idx=block_idx,
             weight_quantizer=weight_quantizer,
             act_quantizer=act_quantizer,
-            qkv_in_transform=qkv_in_transform,
+            qkv_in_transform=r1_transform,
             o_in_transform=o_in_transform,
-            gate_up_in_transform=gate_up_in_transform
+            gate_up_in_transform=r1_transform
         )
         quantized_mlp = get_mlp_layer(model.config)(
             model.config,
             weight_quantizer=weight_quantizer,
             act_quantizer=act_quantizer,
-            gate_up_in_transform=gate_up_in_transform,
+            gate_up_in_transform=r1_transform,
             down_in_transform=down_in_transform,
-            qkv_in_transform=qkv_in_transform
+            qkv_in_transform=r1_transform
         )
 
         quantized_attn.load_state_dict(block.self_attn.state_dict(), strict=False)
@@ -146,7 +238,7 @@ def rtn_quantization(
                 if isinstance(layer, QLinear):
                     with torch.no_grad():
                         # NOTE for real_quant all transforms are identical
-                        weight = qkv_in_transform(layer.weight, inv_t=True)
+                        weight = r1_transform(layer.weight, inv_t=True)
                         scales, zeros = layer.weight_quantizer.get_quantization_params(weight)
                         qweight = layer.weight_quantizer.quantize(weight, scales, zeros)
 
@@ -159,13 +251,7 @@ def rtn_quantization(
 
         quantized_attn.fix_parametrization()
         quantized_mlp.fix_parametrization()
-
-    # my_res = model.model.layers[0].self_attn.v_proj.weight.T
-
-    # absdiff = (my_res - ref_res).abs()
-    # print("Median absdiff:", absdiff.median())
-    # print("Max absdiff:", absdiff.max())
-
+    
     gc.collect()
     torch.cuda.empty_cache()
 

@@ -59,7 +59,7 @@ class QuantizedLlamaMLP(nn.Module):
 
     def forward(self, x: torch.Tensor):
         # Rotate input
-        # fused in o_proj!
+        # disabled as fused in o_proj!
         # x = self.gate_up_in_transform(x)
 
         # Get up and gate projection outputs
@@ -72,13 +72,10 @@ class QuantizedLlamaMLP(nn.Module):
         # R4: this is the only online transform that is not fused.
         x = self.down_in_transform(x)
 
-        assert self.qkv_in_transform is None
         down = self.down_proj(x, self.down_in_transform, self.qkv_in_transform)
         return down
 
     def fix_parametrization(self):
-        assert self.qkv_in_transform is None
-        assert self.gate_up_in_transform is None
         # Fix layer parametrizations
         self.up_proj.fix_parametrization(self.gate_up_in_transform)
         self.gate_proj.fix_parametrization(self.gate_up_in_transform)
@@ -149,12 +146,15 @@ class QuantizedLlamaAttention(nn.Module):
         hidden_shape = (*input_shape, -1, self.head_dim)
 
         # Rotate input
-        # fused in down_proj!
+        # disabled as fused in down_proj!
         # hidden_states = self.qkv_in_transform(hidden_states)
 
         query_states = self.q_proj(hidden_states, self.qkv_in_transform).view(hidden_shape).transpose(1, 2)
         key_states = self.k_proj(hidden_states, self.qkv_in_transform).view(hidden_shape).transpose(1, 2)
-    
+
+        # NOTE: Fusing o_in_transform in v_proj is non-trivial in case
+        # GQA is used - num_key_value_heads * hea_dim is NOT hidden_size.
+        # Risk of multiplying by a rotation that does NOT cancel out the one in o_proj here.
         value_states = self.v_proj(
             hidden_states,
             self.qkv_in_transform,
@@ -194,8 +194,9 @@ class QuantizedLlamaAttention(nn.Module):
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        
         # Rotate attn output
-        # fused in v_proj!
+        # ideally would be fused in v_proj!
         attn_output = self.o_in_transform(attn_output)
 
         attn_output = self.o_proj(
@@ -210,11 +211,10 @@ class QuantizedLlamaAttention(nn.Module):
         self.q_proj.fix_parametrization(self.qkv_in_transform)
         self.k_proj.fix_parametrization(self.qkv_in_transform)
 
-        print("fix_parametrization v_proj")
+        # NOTE: see forward.
         # self.v_proj.fix_parametrization(self.qkv_in_transform, self.o_in_transform)
         self.v_proj.fix_parametrization(self.qkv_in_transform)
 
-        print("fix_parametrization o_proj")
         self.o_proj.fix_parametrization(self.o_in_transform, self.gate_up_in_transform)
 
         self._train_mode = False

@@ -21,11 +21,7 @@ class Quantizer:
         group_size: Optional[int] = None,
         scale_precision: str = "fp16",
         scale_factor: float = 1.0, # Used only for MXFP
-        no_quant: bool = False
     ):
-        print("no_quant:", no_quant)
-        self.no_quant = no_quant
-
         # Sanity checks
         if format in ["fp", "nvfp", "mxfp"]:
             assert symmetric, "Only symmetric quantization is supported for floating point formats."
@@ -137,34 +133,24 @@ class Quantizer:
         return scales, zeros
         
     def quantize(self, x: torch.Tensor, scales: torch.Tensor, zeros: Optional[torch.Tensor] = None) -> torch.Tensor:
-        if self.no_quant:
-            return x
-        else:
-            original_shape = x.shape
-            q = self.quant_fn(
-                *self._reshape_before_quantization(x, scales, zeros), 
-                self.q_min, 
-                self.q_max
-            ).reshape(original_shape)
-            return q
+        original_shape = x.shape
+        q = self.quant_fn(
+            *self._reshape_before_quantization(x, scales, zeros), 
+            self.q_min, 
+            self.q_max
+        ).reshape(original_shape)
 
     def dequantize(self, q: torch.Tensor, scales: torch.Tensor, zeros: Optional[torch.Tensor] = None) -> torch.Tensor:
-        if self.no_quant:
-            return q
-        else:
-            original_shape = q.shape
-            return self.dequant_fn(
-                *self._reshape_before_quantization(q, scales, zeros), 
-            ).reshape(original_shape)
+        original_shape = q.shape
+        return self.dequant_fn(
+            *self._reshape_before_quantization(q, scales, zeros), 
+        ).reshape(original_shape)
     
     def __call__(self, x: torch.Tensor, scales: torch.Tensor, zeros: Optional[torch.Tensor] = None) -> torch.Tensor:
-        if self.no_quant:
-            return x
-        else:
-            original_shape = x.shape
-            q = self.quant_dequant_fn(
-                *self._reshape_before_quantization(x, scales, zeros), 
-                self.q_min, 
-                self.q_max
-            ).reshape(original_shape)
-            return q
+        original_shape = x.shape
+        q = self.quant_dequant_fn(
+            *self._reshape_before_quantization(x, scales, zeros), 
+            self.q_min, 
+            self.q_max
+        ).reshape(original_shape)
+        return q

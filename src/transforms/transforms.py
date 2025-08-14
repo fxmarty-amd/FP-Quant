@@ -29,6 +29,9 @@ class IdentityTransform(BaseTransform):
         return x
 
 
+def is_power_of_two(n):
+    return (n != 0) and (n & (n-1) == 0)
+
 class HadamardTransform(BaseTransform):
 
     def __init__(self, group_size: Optional[int]):
@@ -39,7 +42,8 @@ class HadamardTransform(BaseTransform):
             self.scale = 1 / math.sqrt(self.group_size)
         else:
             self.group_size = None
-
+            self.scale = None
+        
     def forward(self, x: torch.Tensor, inv_t: bool = False, dim: int = -1):
         if dim != -1:
             assert dim == 0
@@ -48,14 +52,18 @@ class HadamardTransform(BaseTransform):
             x = x.T.contiguous()
 
         x_shape = x.shape
-        # print("x_shape here", x_shape.shape)
         if self.group_size is not None:
-            # Hadamard transform is it own inverse
-            x = hadamard_transform(x.view(-1, self.group_size), scale=self.scale).view(x_shape)
+            group_size = self.group_size
+            scale = self.scale
         else:
             group_size = x_shape[-1]
             scale = 1 / math.sqrt(group_size)
-            x = hadamard_transform(x.view(-1, group_size), scale=scale).view(x_shape)
+        
+        # NOTE: llama 8B intermediate_size is 14336, not a power of two, and `hadamard_transform` is NOT its own inverse in this case!
+        if not is_power_of_two(group_size):
+            raise ValueError(f"group_size={group_size} is not a power of two - hadamard_transform inverse is not itself!")
+
+        x = hadamard_transform(x.view(-1, group_size), scale=scale).view(x_shape)
 
         if dim != -1:
             x = x.T.contiguous()

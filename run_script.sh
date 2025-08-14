@@ -1,4 +1,5 @@
 MODEL="/data/amdneuralopt/huggingface/hub/meta-llama/Meta-Llama-3.1-8B-Instruct"
+# MODEL=/data/amdneuralopt/felmarty/HuggingFaceTB_SmolLM-135M
 # Quantization params
 FORMAT=mxfp
 W_BITS=4
@@ -11,7 +12,7 @@ QUANTIZATION_ORDER=default
 # Transform params
 # identity, hadamard
 TRANSFORM_CLASS=hadamard
-HADAMARD_GROUP_SIZE=0
+HADAMARD_GROUP_SIZE=32
 # Evaluation params
 EVAL_PERPLEXITY=1
 EVAL_OPENLLM=0
