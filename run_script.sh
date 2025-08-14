@@ -11,13 +11,16 @@ QUANTIZATION_ORDER=default
 # Transform params
 # identity, hadamard
 TRANSFORM_CLASS=hadamard
-HADAMARD_GROUP_SIZE=32
+HADAMARD_GROUP_SIZE=0
 # Evaluation params
 EVAL_PERPLEXITY=1
 EVAL_OPENLLM=0
 # Misc params
 LOG_WANDB=0
 DTYPE=auto
+
+# Disable quantization
+NO_QUANT="--no_quant"
 
 SCRIPT_ARGS=""
 
@@ -51,8 +54,9 @@ fi
 #     export WANDB_NAME=${MODEL}
 # else
     # export WANDB_NAME=${MODEL}/${FORMAT}-w${W_BITS}g${W_GROUP_SIZE}-a${A_BITS}g${A_GROUP_SIZE}-${METHOD_NAME}-${TRANSFORM_CLASS}-transformeeee
-SCRIPT_ARGS="${SCRIPT_ARGS} --save_path quantized_models/${MODEL_ID}-${FORMAT}-w${W_BITS}g${W_GROUP_SIZE}-a${A_BITS}${A_GROUP_SIZE}-${METHOD_NAME}-${TRANSFORM_CLASS}-transform"
-# fi
+SCRIPT_ARGS="${SCRIPT_ARGS} ${NO_QUANT} "
+
+# --save_path quantized_models/${MODEL_ID}-${FORMAT}-w${W_BITS}g${W_GROUP_SIZE}-a${A_BITS}${A_GROUP_SIZE}-${METHOD_NAME}-${TRANSFORM_CLASS}-transform"
 
 
     # --hadamard_group_size=${HADAMARD_GROUP_SIZE} \

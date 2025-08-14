@@ -41,23 +41,24 @@ class HadamardTransform(BaseTransform):
             self.group_size = None
 
     def forward(self, x: torch.Tensor, inv_t: bool = False, dim: int = -1):
-        x_shape = x.shape
         if dim != -1:
             assert dim == 0
             assert x.ndim == 2
 
-            x = x.reshape(1, 0)
+            x = x.T.contiguous()
 
+        x_shape = x.shape
+        # print("x_shape here", x_shape.shape)
         if self.group_size is not None:
             # Hadamard transform is it own inverse
             x = hadamard_transform(x.view(-1, self.group_size), scale=self.scale).view(x_shape)
         else:
-            group_size = x_shape[dim]
+            group_size = x_shape[-1]
             scale = 1 / math.sqrt(group_size)
             x = hadamard_transform(x.view(-1, group_size), scale=scale).view(x_shape)
 
         if dim != -1:
-            x = x.reshape(1, 0)
+            x = x.T.contiguous()
 
         return x
 

@@ -63,22 +63,26 @@ class QuantizedLlamaMLP(nn.Module):
         # x = self.gate_up_in_transform(x)
 
         # Get up and gate projection outputs
-        up = self.up_proj(x, self.gate_up_in_transform, self.qkv_in_transform)
+        up = self.up_proj(x, self.gate_up_in_transform)
         gate = self.gate_proj(x, self.gate_up_in_transform)
         # Apply activation function
         x = self.act_fn(gate) * up
         # Get down projection output
+
         # R4: this is the only online transform that is not fused.
         x = self.down_in_transform(x)
 
-        down = self.down_proj(x, self.down_in_transform)
+        assert self.qkv_in_transform is None
+        down = self.down_proj(x, self.down_in_transform, self.qkv_in_transform)
         return down
 
     def fix_parametrization(self):
+        assert self.qkv_in_transform is None
+        assert self.gate_up_in_transform is None
         # Fix layer parametrizations
         self.up_proj.fix_parametrization(self.gate_up_in_transform)
         self.gate_proj.fix_parametrization(self.gate_up_in_transform)
-        self.down_proj.fix_parametrization(self.down_in_transform)
+        self.down_proj.fix_parametrization(self.down_in_transform, self.qkv_in_transform)
 
         self._train_mode = False
 
@@ -154,7 +158,7 @@ class QuantizedLlamaAttention(nn.Module):
         value_states = self.v_proj(
             hidden_states,
             self.qkv_in_transform,
-            self.o_in_transform
+            # self.o_in_transform
         )
         
         value_states = value_states.view(hidden_shape).transpose(1, 2)
@@ -192,7 +196,7 @@ class QuantizedLlamaAttention(nn.Module):
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         # Rotate attn output
         # fused in v_proj!
-        # attn_output = self.o_in_transform(attn_output)
+        attn_output = self.o_in_transform(attn_output)
 
         attn_output = self.o_proj(
             attn_output,
@@ -205,7 +209,12 @@ class QuantizedLlamaAttention(nn.Module):
         # Fix layer parametrizations
         self.q_proj.fix_parametrization(self.qkv_in_transform)
         self.k_proj.fix_parametrization(self.qkv_in_transform)
+
+        print("fix_parametrization v_proj")
+        # self.v_proj.fix_parametrization(self.qkv_in_transform, self.o_in_transform)
         self.v_proj.fix_parametrization(self.qkv_in_transform)
-        self.o_proj.fix_parametrization(self.o_in_transform)
+
+        print("fix_parametrization o_proj")
+        self.o_proj.fix_parametrization(self.o_in_transform, self.gate_up_in_transform)
 
         self._train_mode = False

@@ -3,6 +3,7 @@ import argparse
 from typing import Optional
 
 import torch
+import torch.nn as nn
 from transformers import AutoModelForCausalLM
 
 from .qlinear import QLinear
@@ -28,9 +29,11 @@ def rtn_quantization(
     transform_kwargs = dict(group_size=args.hadamard_group_size)
     print("transform_kwargs", transform_kwargs)
 
+    no_quant = args.no_quant
+
     # Init quantizers
     weight_quantizer = None
-    if args.w_bits < 16:
+    if args.w_bits < 16 and not args.no_quant:
         weight_quantizer = Quantizer(
             bits=args.w_bits, 
             symmetric=True, 
@@ -39,10 +42,11 @@ def rtn_quantization(
             observer=args.w_observer, 
             group_size=args.w_group_size,
             scale_precision=args.scale_precision,
-            scale_factor=args.mxfp_scale_factor
+            scale_factor=args.mxfp_scale_factor,
+            no_quant=no_quant,
         )
     act_quantizer = None
-    if args.a_bits < 16:
+    if args.a_bits < 16 and not args.no_quant:
         act_quantizer = Quantizer(
             bits=args.a_bits, 
             symmetric=True, 
@@ -51,17 +55,61 @@ def rtn_quantization(
             observer=args.a_observer, 
             group_size=args.a_group_size,
             scale_precision=args.scale_precision,
-            scale_factor=args.mxfp_scale_factor
+            scale_factor=args.mxfp_scale_factor,
+            no_quant=no_quant,
         )
+
+    # 1. Init transforms
+
+    # R1
+    # qkv_in_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
+    qkv_in_transform = None
+
+    # R1
+    # gate_up_in_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
+    gate_up_in_transform = None
+
+    class ModuleWrapped(nn.Module):
+        def __init__(self, module: nn.Module, transform, position: str):
+            super().__init__()
+            self.module = module
+            self.transform = transform
+            self.position = position
+        
+        def forward(self, x):
+            if self.position == "before":
+                x = self.transform(x)
+            
+            x = self.module(x)
+
+            if self.position == "after":
+                x = self.transform(x)
+            
+            return x
+    
+    # Add R1 to embed_tokens, R1^(-1) to lm_head
+    # model.model.embed_tokens.weight.data = model.model.embed_tokens.weight.data.clone()
+    # model.model.embed_tokens = ModuleWrapped(model.model.embed_tokens, qkv_in_transform, position="after")
+
+    # model.lm_head.weight.data = model.lm_head.weight.data.clone()
+    # model.lm_head = ModuleWrapped(model.lm_head, qkv_in_transform, position="before")
+
+    # print("model.model.layers[0].self_attn.v_proj.weight", model.model.layers[0].self_attn.v_proj.weight.shape)
+    # print("model.model.layers[0].self_attn.o_proj.weight", model.model.layers[0].self_attn.o_proj.weight.shape)
+    # ref_res = model.model.layers[0].self_attn.v_proj.weight.T @ model.model.layers[0].self_attn.o_proj.weight.T
 
     # Iterate over transformer blocks
     for block_idx, block in enumerate(blocks):
         print(f"Processing block {block_idx}...")
         print(f"args.transform_class: {args.transform_class}")
-        # 1. Init transforms
-        qkv_in_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
+
+        # R2
+        # o_in_transform = None
         o_in_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
-        gate_up_in_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
+        # o_in_transform = build_transform("identity")
+
+        # R4
+        # down_in_transform = build_transform("identity")
         down_in_transform = build_transform(args.transform_class, size=model.config.intermediate_size, **transform_kwargs)     
 
         # 2. Replace blocks with quantized versions
@@ -111,6 +159,12 @@ def rtn_quantization(
 
         quantized_attn.fix_parametrization()
         quantized_mlp.fix_parametrization()
+
+    # my_res = model.model.layers[0].self_attn.v_proj.weight.T
+
+    # absdiff = (my_res - ref_res).abs()
+    # print("Median absdiff:", absdiff.median())
+    # print("Max absdiff:", absdiff.max())
 
     gc.collect()
     torch.cuda.empty_cache()

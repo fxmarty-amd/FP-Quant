@@ -217,6 +217,11 @@ def parse_args():
         help="Whether to apply real quantization to model."
     )
     parser.add_argument(
+        "--no_quant",
+        action="store_true",
+        help="Whether to disable quantization."
+    )
+    parser.add_argument(
         "--mxfp_scale_factor",
         type=float,
         default=0.75, # Tseng scaling factor
@@ -382,6 +387,7 @@ def main():
 
     if quantize_anything:
         if args.gptq:
+            raise ValueError("not supported")
             calibration_data = get_data(
                 args.dataset_name_or_path,
                 tokenizer,
