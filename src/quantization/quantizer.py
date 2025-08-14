@@ -139,6 +139,7 @@ class Quantizer:
             self.q_min, 
             self.q_max
         ).reshape(original_shape)
+        return q
 
     def dequantize(self, q: torch.Tensor, scales: torch.Tensor, zeros: Optional[torch.Tensor] = None) -> torch.Tensor:
         original_shape = q.shape
