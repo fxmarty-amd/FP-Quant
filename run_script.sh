@@ -1,6 +1,7 @@
-MODEL="/data/amdneuralopt/huggingface/hub/meta-llama/Meta-Llama-3.1-8B-Instruct"
+# MODEL="/data/amdneuralopt/huggingface/hub/meta-llama/Meta-Llama-3.1-8B-Instruct"
 # MODEL=/data/amdneuralopt/felmarty/HuggingFaceTB_SmolLM-135M
 # Quantization params
+MODEL="/data/amdneuralopt/huggingface/pretrained_models/meta-llama/Llama-3.2-1B-Instruct"
 FORMAT=mxfp
 W_BITS=4
 A_BITS=4
@@ -13,8 +14,8 @@ QUANTIZATION_ORDER=default
 # identity, hadamard
 TRANSFORM_CLASS=hadamard
 HADAMARD_GROUP_SIZE=32
-FUSE_ROTATIONS=""
-# FUSE_ROTATIONS="--fuse-rotations"
+# FUSE_ROTATIONS=""
+FUSE_ROTATIONS="--fuse-rotations"
 # Evaluation params
 EVAL_PERPLEXITY=1
 EVAL_OPENLLM=0
@@ -23,8 +24,8 @@ LOG_WANDB=0
 DTYPE=auto
 
 # Disable quantization
-# NO_QUANT="--no_quant"
-NO_QUANT=""
+NO_QUANT="--no_quant"
+# NO_QUANT=""
 
 SCRIPT_ARGS=""
 
@@ -79,5 +80,5 @@ python model_quant.py \
     --dataset_name_or_path=c4 \
     --sequence_length=2048 \
     --dtype=${DTYPE} \
-    --amp \
-    ${FUSE_ROTATIONS}
+    ${FUSE_ROTATIONS} \
+    --amp

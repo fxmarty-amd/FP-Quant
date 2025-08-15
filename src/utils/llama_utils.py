@@ -75,7 +75,11 @@ class QuantizedLlamaMLP(nn.Module):
         # R4: this is the only online transform that is not fused.
         x = self.down_in_transform(x)
 
-        down = self.down_proj(x, self.down_in_transform, self.qkv_in_transform)
+        if self.fuse_rotations:
+            down = self.down_proj(x, self.down_in_transform, self.qkv_in_transform)
+        else:
+            down = self.down_proj(x, self.down_in_transform)
+
         return down
 
     def fix_parametrization(self):
@@ -210,11 +214,18 @@ class QuantizedLlamaAttention(nn.Module):
         # ideally would be fused in v_proj!
         attn_output = self.o_in_transform(attn_output)
 
-        attn_output = self.o_proj(
-            attn_output,
-            self.o_in_transform,
-            self.gate_up_in_transform
-        )
+        if self.fuse_rotations:
+            attn_output = self.o_proj(
+                attn_output,
+                self.o_in_transform,
+                self.gate_up_in_transform
+            )
+        else:
+            attn_output = self.o_proj(
+                attn_output,
+                self.o_in_transform,
+            )
+
         return attn_output, attn_weights
 
     def fix_parametrization(self):

@@ -18,6 +18,7 @@ from ..transforms.transforms import build_transform, get_transform_matrix
 from tqdm import tqdm
 from quark.torch.algorithm.utils.module import get_nested_attr_from_module
 from quark.torch.algorithm.rotation.rotation_utils import  transform_rms_norm_and_linear
+from quark.torch.utils.accelerate_helper import untie_parameters
 
 SCALING_LAYERS_ABSTRACT = {
     "first_layer": [
@@ -170,6 +171,9 @@ def rtn_quantization(
             scale_factor=args.mxfp_scale_factor,
         )
 
+    # embed_tokens and lm_head parameters are shared.
+    model = untie_parameters(model)
+
     # R1: shared accross all layers.
     r1_transform = build_transform(args.transform_class, size=model.config.hidden_size, **transform_kwargs)
     
@@ -187,9 +191,6 @@ def rtn_quantization(
 
         # Add R1 to embed_tokens, R1^(-1) to lm_head.
         # R1 will be added in linear layers using the `qkv_in_transform` and `gate_up_in_transform` logic.
-        model.model.embed_tokens.weight.data = model.model.embed_tokens.weight.data.clone()
-        model.lm_head.weight.data = model.lm_head.weight.data.clone()
-
         model.model.embed_tokens = ModuleWrapped(model.model.embed_tokens, r1_transform, position="after")
 
         model.lm_head = ModuleWrapped(model.lm_head, r1_transform, position="before")
