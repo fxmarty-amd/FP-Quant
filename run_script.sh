@@ -63,6 +63,22 @@ SCRIPT_ARGS="${SCRIPT_ARGS} ${NO_QUANT} "
 
 # --save_path quantized_models/${MODEL_ID}-${FORMAT}-w${W_BITS}g${W_GROUP_SIZE}-a${A_BITS}${A_GROUP_SIZE}-${METHOD_NAME}-${TRANSFORM_CLASS}-transform"
 
+echo "--model_name_or_path=${MODEL}"
+echo "--format=${FORMAT}"
+echo "--w_bits=${W_BITS}"
+echo "--a_bits=${A_BITS}"
+echo "--w_group_size=${W_GROUP_SIZE}"
+echo "--a_group_size=${A_GROUP_SIZE}"
+echo "--transform_class=${TRANSFORM_CLASS}"
+echo "--w_observer=${W_OBSERVER}"
+echo "--quantization_order=${QUANTIZATION_ORDER}"
+echo "$SCRIPT_ARGS"
+echo "--hadamard_group_size=${HADAMARD_GROUP_SIZE}"
+echo "--dataset_name_or_path=c4"
+echo "--sequence_length=2048"
+echo "--dtype=${DTYPE}"
+echo "FUSE_ROTATIONS: ${FUSE_ROTATIONS}"
+echo "--amp"
 
     # --hadamard_group_size=${HADAMARD_GROUP_SIZE} \
 python model_quant.py \
